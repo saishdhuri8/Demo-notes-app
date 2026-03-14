@@ -6,4 +6,5 @@ dist
 coverage
 .DS_Store
 .env
+notes.json
 

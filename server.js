@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const port = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Path to JSON file where notes are stored
 const notesFilePath = path.join(__dirname, 'notes.json');
@@ -13,9 +13,27 @@ let notes = [];
 try {
   if (fs.existsSync(notesFilePath)) {
     const fileData = fs.readFileSync(notesFilePath, 'utf8');
-    notes = JSON.parse(fileData);
-    if (!Array.isArray(notes)) {
-      notes = [];
+    const parsed = JSON.parse(fileData);
+    if (Array.isArray(parsed)) {
+      notes = parsed
+        .map((item, index) => {
+          if (typeof item === 'string') {
+            return {
+              id: `migrated-${Date.now()}-${index}`,
+              text: item,
+              createdAt: new Date().toISOString(),
+            };
+          }
+          if (item && typeof item === 'object' && typeof item.text === 'string') {
+            return {
+              id: item.id || `note-${Date.now()}-${index}`,
+              text: item.text,
+              createdAt: item.createdAt || new Date().toISOString(),
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
     }
   }
 } catch (err) {
@@ -23,16 +41,61 @@ try {
   notes = [];
 }
 
+const escapeHtml = (value) =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
 app.use(express.urlencoded({ extended: true }));
+
+// Very small request logger
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`${req.method} ${req.originalUrl} -> ${res.statusCode} (${duration}ms)`);
+  });
+  next();
+});
 
 // Home page - list notes and show form
 app.get('/', (req, res) => {
   const notesList = notes
-    .map(
-      (note, index) =>
-        `<li><strong>Note ${index + 1}:</strong> ${note}</li>`
-    )
-    .join('') || '<li>No notes yet.</li>';
+    .map((note, index) => {
+      const created = note.createdAt ? new Date(note.createdAt) : null;
+      const createdLabel = created
+        ? created.toLocaleString('en-IN', {
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : 'Just now';
+
+      return `
+        <li>
+          <div style="flex:1; display:flex; flex-direction:column; gap:2px;">
+            <div style="font-size:0.8rem; text-transform:uppercase; letter-spacing:0.12em; color:rgba(148,163,184,0.95);">
+              Note ${index + 1}
+            </div>
+            <div>${escapeHtml(note.text)}</div>
+            <div style="font-size:0.7rem; color:rgba(148,163,184,0.9); margin-top:2px;">
+              Saved at ${createdLabel}
+            </div>
+          </div>
+          <form method="POST" action="/notes/${encodeURIComponent(note.id)}/delete" style="margin:0; display:flex; align-items:center;">
+            <button type="submit" aria-label="Delete note ${index + 1}" style="padding:4px 10px; font-size:0.75rem; background:rgba(15,23,42,0.98); color:#fca5a5; border-radius:999px; border:1px solid rgba(248,113,113,0.6); box-shadow:none;">
+              ✕
+            </button>
+          </form>
+        </li>
+      `;
+    })
+    .join('');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -473,7 +536,13 @@ app.get('/', (req, res) => {
 app.post('/notes', (req, res) => {
   const { note } = req.body;
   if (note && note.trim()) {
-    notes.push(note.trim());
+    const trimmed = note.trim();
+    const newNote = {
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: trimmed,
+      createdAt: new Date().toISOString(),
+    };
+    notes.unshift(newNote);
     try {
       fs.writeFileSync(notesFilePath, JSON.stringify(notes, null, 2), 'utf8');
     } catch (err) {
@@ -483,7 +552,26 @@ app.post('/notes', (req, res) => {
   res.redirect('/');
 });
 
-app.listen(port, () => {
-  console.log(`Notes app listening at http://localhost:${port}`);
+// Delete a note
+app.post('/notes/:id/delete', (req, res) => {
+  const { id } = req.params;
+  if (id) {
+    notes = notes.filter((note) => note.id !== id);
+    try {
+      fs.writeFileSync(notesFilePath, JSON.stringify(notes, null, 2), 'utf8');
+    } catch (err) {
+      console.error('Failed to write to notes.json after delete', err);
+    }
+  }
+  res.redirect('/');
+});
+
+// Simple health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Notes app listening at http://localhost:${PORT}`);
 });
 
